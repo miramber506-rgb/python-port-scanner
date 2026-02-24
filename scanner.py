@@ -3,6 +3,11 @@ import time
 import threading
 from datetime import datetime
 
+COMMON_PORTS= {
+    21: "FTP", 22: "SSH", 23: "Telnet", 25: "SMTP", 
+    53: "DNS", 80: "HTTP", 443: "HTTPS", 8080: "HTTP-Proxy"
+}
+
 # 1. Setup Input
 target = input("Enter the IP address or domain to scan: ")
 
@@ -14,17 +19,18 @@ def port_scan(port):
         s.settimeout(0.5)
         result = s.connect_ex((target, port))
         if result == 0:
+            service_name = COMMON_PORTS.get(port, "Unknown Service")
             try:
                 s.sendall(b'GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n') 
                 banner = s.recv(1024).decode().strip()
                 
                 # Only take the first line (e.g., "HTTP/1.0 400 Bad Request")
                 first_line = banner.split('\n')[0]
-                banner_info = f" | Service: {first_line}"
+                banner_info = f" | Banner: {first_line}"
             except:
-                banner_info = " | Service: Unknown"
+                banner_info = " | Banner: Unknown"
 
-            print(f"\033[92m[*] Port {port} is OPEN{banner_info}\033[0m")
+            print(f"\033[92m[*] Port {port} ({service_name}) is OPEN{banner_info}\033[0m")
         s.close()
     except:
         pass
