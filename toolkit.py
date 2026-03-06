@@ -1,9 +1,13 @@
+from unittest import result
+import threading
 import scapy.all as scapy
 import socket
 import sys
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
+import queue
 
+file_lock = threading.Lock()
 # --- CONFIGURATION & HELPERS ---
 PROTOCOLS = {1: "ICMP", 6: "TCP", 17: "UDP"}
 
@@ -19,7 +23,18 @@ def start_sniffer():
     print("--- SNIFFER ACTIVE (Ctrl+C to stop) ---")
     scapy.sniff(prn=packet_callback, store=0)
 
+
 # --- MODULE 2: SCANNER ---
+def identify_service(banner, port):
+    banner = banner.upper()
+    if "SSH-" in banner: return "Secure Shell (SSH)"
+    if "HTTP/" in banner or "LOCATION:" in banner: return "Web Server (HTTP)"
+    if "FTP" in banner or banner.startswith("220"): return "File Transfer (FTP)"
+    if "SMTP" in banner: return "Email Server (SMTP)"
+    if "MARIADB" in banner or "MYSQL" in banner: return "Database (MySQL)"
+    if port == 53: return "DNS Server"
+    return "Unknown Service"
+
 def scan_port(ip, port):
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -27,36 +42,81 @@ def scan_port(ip, port):
             result = s.connect_ex((ip, port))
             if result == 0:
                 # 1. Grab the Banner
+                # 1. Grab the Banner - PROTOCOL SPECIFIC
                 try:
-                    s.send(b"GET / HTTP/1.1\r\n\r\n")
+                    if port in [80, 443, 8080]:
+                        s.send(b"GET / HTTP/1.1\r\n\r\n")
+                    elif port == 22:
+                        s.send(b"")  # SSH needs no data
+                    elif port == 21:
+                        s.send(b"")  # FTP needs no data  
+                    elif port == 25:
+                        s.send(b"EHLO test\r\n")
+                    else:
+                        s.send(b"\r\n")  # Generic
+                    
                     banner = s.recv(1024).decode(errors='ignore').strip()
-                    service_info = f" | Banner: {banner[:50]}" if banner else " | No banner"
                 except:
-                    banner = "Restricted"
-                    service_info = " | Banner: Restricted"
-                
-                # 2. Print to Screen
-                print(f"\n[+] Port {port} is OPEN{service_info}")
+                    banner = ""
 
-                # 3. Save only SUCCESSFUL hits to the file
-                with open("scan_report.txt", "a") as f:
-                    f.write(f"Target: {ip} | Port: {port} | Banner: {banner}\n")
+                
+                # 2. Identify the service
+                service_type = identify_service(banner, port)
+                banner_clean = banner[:20].replace('\n', ' ').strip() if banner else "No banner"
+                service_info = f"{service_type} ({banner_clean})"
+                
+                print(f"\n[+] Port {port} is OPEN")
+                
+                # 3. Log to file
+                with file_lock:
+                    with open("scan_report.txt", "a") as f:
+                        f.write(f"Target: {ip} | Port: {port} | Info: {service_info}\n")
+                
+                # IMPORTANT: Return the data for the table!
+                return (port, service_info)
             else:
-                # Visual feedback for closed ports
                 print(".", end="", flush=True)
-    except Exception as e:
-        pass
+                return None
+    except:
+        return None
+    
 
 
 def start_scanner(target_ip=None):
-    # Use the passed IP if available, otherwise ask for one
     target = target_ip if target_ip else input("Target IP: ")
+
+    print("\n" + "="*50)
+    print(f"🚀 NYXIAN SCANNER STARTING ON: {target}")
+    print(f"Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("="*50)
+
+    found_ports = []
+
+    try:
+        with ThreadPoolExecutor(max_workers=50) as executor:
+            futures = [executor.submit(scan_port, target, p) for p in range(1, 8081)]
+            for future in futures:
+                res = future.result()
+                if res:
+                    found_ports.append(res)
+
+    except KeyboardInterrupt:
+        print("\n\n[!] User interrupted. Cleaning up...")
+
+    # --- THE VISUALIZER TABLE ---
+    print("\n\n┌" + "─"*62 + "┐")
+    print(f"│ {'PORT':<8} │ {'STATUS':<10} │ {'SERVICE/BANNER':<38} │")
+    print("├" + "─"*10 + "┼" + "─"*12 + "┼" + "─"*40 + "┤")
     
-    print(f"\n--- SCANNING {target} ---")
-    
-    with ThreadPoolExecutor(max_workers=100) as executor:
-        for port in range(1, 1025):
-            executor.submit(scan_port, target, port)
+    if not found_ports:
+        print(f"│ {'NONE':<8} │ {'CLOSED':<10} │ {'No open ports found':<38} │")
+    else:
+        for p, b in sorted(found_ports):
+            print(f"│ {p:<8} │ {'OPEN':<10} │ {b[:38]:<38} │")
+            
+    print("└" + "─"*62 + "┘")
+    print(f"Scan Completed at: {datetime.now().strftime('%H:%M:%S')}\n")
+
 
 #module 3: sub domain finder
 
